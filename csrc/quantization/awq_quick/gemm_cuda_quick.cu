@@ -15,6 +15,7 @@ Inspired by :
 #include <stdio.h>
 #include <torch/extension.h>
 #include <c10/cuda/CUDAGuard.h>
+#include <algorithm>
 
 namespace vllm {
 namespace quick {
@@ -1279,9 +1280,11 @@ __global__ void gemm_forward_4bit_cuda_quick_m16n128k32(int G, int split_k_iters
   int block_offset = blockIdx.x / oc_block_num * 16 + threadIdx.x / 4;
   for (int local_id = 0; local_id < 4; ++local_id) {
     int row_offset = block_offset + local_id % 2 * 8;
-    #pragma unroll
-    for (int chunk_id = 0; chunk_id < 4; ++chunk_id) {
-      if (row_offset < M) __stcg((__half2*)(C_ptr + chunk_id * 16 + row_offset * OC + (local_id / 2) * 8), __float22half2_rn(*(float2*)(C_warp + (chunk_id * 8) + local_id * 2)));
+    if (row_offset < M) {
+      #pragma unroll
+      for (int chunk_id = 0; chunk_id < 4; ++chunk_id) {
+        __stcg((__half2*)(C_ptr + chunk_id * 16 + row_offset * OC + (local_id / 2) * 8), __float22half2_rn(*(float2*)(C_warp + (chunk_id * 8) + local_id * 2)));
+      }
     }
   }
 }
@@ -1324,17 +1327,13 @@ __global__ void gemm_forward_4bit_cuda_quick_m32n128k32(int G, int split_k_iters
     __syncthreads();
   }
 
-  const int row_offset = threadIdx.x / 4;
   #pragma unroll
+  const int row_offset = threadIdx.x / 4 * OC;
   for (int chunk_id = 0; chunk_id < 4; ++chunk_id) {
-    half* C_ptr_chunk = C_ptr + chunk_id * 16;
-    float* C_warp_chunk = C_warp + chunk_id * 8;
     #pragma unroll
     for (int local_id = 0; local_id < 4; ++local_id) {
-      const int row_offset_1 = row_offset + local_id % 2 * 8;
-      const int row_offset_2 = row_offset + local_id % 2 * 8 + 16;
-      __stcg((__half2*)(C_ptr_chunk + row_offset_1 * OC + (local_id / 2) * 8), __float22half2_rn(*(float2*)(C_warp_chunk      + local_id * 2)));
-      __stcg((__half2*)(C_ptr_chunk + row_offset_2 * OC + (local_id / 2) * 8), __float22half2_rn(*(float2*)(C_warp_chunk + 32 + local_id * 2)));
+      *(__half2*)(C_ptr + chunk_id * 16 + row_offset + (local_id % 2 * 8     ) * OC + (local_id / 2) * 8) = __float22half2_rn(*(float2*)(C_warp      + (chunk_id * 8) + local_id * 2));
+      *(__half2*)(C_ptr + chunk_id * 16 + row_offset + (local_id % 2 * 8 + 16) * OC + (local_id / 2) * 8) = __float22half2_rn(*(float2*)(C_warp + 32 + (chunk_id * 8) + local_id * 2));
     }
   }
 }
@@ -1379,36 +1378,53 @@ __global__ void gemm_forward_4bit_cuda_quick_m64n128k32(int G, int split_k_iters
   }
 
   #pragma unroll
+  const int row_offset = (blockIdx.x / oc_block_num * 64 + threadIdx.x / 4) * OC;
   for (int chunk_id = 0; chunk_id < 4; ++chunk_id) {
     #pragma unroll
     for (int local_id = 0; local_id < 4; ++local_id) {
-      int const row_offset_1 = (((int)blockIdx.x) / oc_block_num) * 64 + ((int)threadIdx.x) / 4 + local_id % 2 * 8;
-      int const row_offset_2 = (((int)blockIdx.x) / oc_block_num) * 64 + ((int)threadIdx.x) / 4 + local_id % 2 * 8 + 16;
-      int const row_offset_3 = (((int)blockIdx.x) / oc_block_num) * 64 + ((int)threadIdx.x) / 4 + local_id % 2 * 8 + 32;
-      int const row_offset_4 = (((int)blockIdx.x) / oc_block_num) * 64 + ((int)threadIdx.x) / 4 + local_id % 2 * 8 + 48;
-      *(__half2*)(C_ptr + chunk_id * 16 + row_offset_1 * OC + (local_id / 2) * 8) = __float22half2_rn(*(float2*)(C_warp      + (chunk_id * 8) + local_id * 2));
-      *(__half2*)(C_ptr + chunk_id * 16 + row_offset_2 * OC + (local_id / 2) * 8) = __float22half2_rn(*(float2*)(C_warp + 32 + (chunk_id * 8) + local_id * 2));
-      *(__half2*)(C_ptr + chunk_id * 16 + row_offset_3 * OC + (local_id / 2) * 8) = __float22half2_rn(*(float2*)(C_warp + 64 + (chunk_id * 8) + local_id * 2));
-      *(__half2*)(C_ptr + chunk_id * 16 + row_offset_4 * OC + (local_id / 2) * 8) = __float22half2_rn(*(float2*)(C_warp + 96 + (chunk_id * 8) + local_id * 2));
+      *(__half2*)(C_ptr + chunk_id * 16 + row_offset + (local_id % 2 * 8     ) * OC + (local_id / 2) * 8) = __float22half2_rn(*(float2*)(C_warp      + (chunk_id * 8) + local_id * 2));
+      *(__half2*)(C_ptr + chunk_id * 16 + row_offset + (local_id % 2 * 8 + 16) * OC + (local_id / 2) * 8) = __float22half2_rn(*(float2*)(C_warp + 32 + (chunk_id * 8) + local_id * 2));
+      *(__half2*)(C_ptr + chunk_id * 16 + row_offset + (local_id % 2 * 8 + 32) * OC + (local_id / 2) * 8) = __float22half2_rn(*(float2*)(C_warp + 64 + (chunk_id * 8) + local_id * 2));
+      *(__half2*)(C_ptr + chunk_id * 16 + row_offset + (local_id % 2 * 8 + 48) * OC + (local_id / 2) * 8) = __float22half2_rn(*(float2*)(C_warp + 96 + (chunk_id * 8) + local_id * 2));
     }
   }
-  // const int row_offset = blockIdx.x / oc_block_num * 64 + threadIdx.x / 4;
-  // #pragma unroll
-  // for (int local_id = 0; local_id < 4; ++local_id) {
-  //   const int row_offset_1 = row_offset + local_id % 2 * 8;
-  //   const int row_offset_2 = row_offset + local_id % 2 * 8 + 16;
-  //   const int row_offset_3 = row_offset + local_id % 2 * 8 + 32;
-  //   const int row_offset_4 = row_offset + local_id % 2 * 8 + 48;
-  //   half* C_ptr_local = C_ptr + (local_id / 2) * 8;
-  //   float* C_warp_local = C_warp + local_id * 2;
-  //   #pragma unroll
-  //   for (int chunk_id = 0; chunk_id < 4; ++chunk_id) {
-  //     *(__half2*)(C_ptr_local + chunk_id * 16 + row_offset_1 * OC) = __float22half2_rn(*(float2*)(C_warp_local + chunk_id * 8));
-  //     *(__half2*)(C_ptr_local + chunk_id * 16 + row_offset_2 * OC) = __float22half2_rn(*(float2*)(C_warp_local + chunk_id * 8 + 32));
-  //     *(__half2*)(C_ptr_local + chunk_id * 16 + row_offset_3 * OC) = __float22half2_rn(*(float2*)(C_warp_local + chunk_id * 8 + 64));
-  //     *(__half2*)(C_ptr_local + chunk_id * 16 + row_offset_4 * OC) = __float22half2_rn(*(float2*)(C_warp_local + chunk_id * 8 + 96));
-  //   }
-  // }
+}
+
+
+__global__ void reduce_cond_psum(half* workspace, half* C, int M, int MH, int OC, int split_k_head, int split_k_tail)
+{
+  const int M_thread_idx = blockDim.x * blockIdx.x + threadIdx.x;
+  const int OC_thread_idx = blockDim.y * blockIdx.y + threadIdx.y;
+
+  int split_k_target = split_k_tail;
+  if (M_thread_idx < MH) split_k_target = split_k_head;
+
+  if (M_thread_idx < M) {
+    float psum_f[8];
+    float4 psum_h = *(float4*)(workspace + M_thread_idx * OC + OC_thread_idx * 8);
+    *(float2*)(psum_f)   = __half22float2(*(half2*)(&psum_h.x));
+    *(float2*)(psum_f+2) = __half22float2(*(half2*)(&psum_h.y));
+    *(float2*)(psum_f+4) = __half22float2(*(half2*)(&psum_h.z));
+    *(float2*)(psum_f+6) = __half22float2(*(half2*)(&psum_h.w));
+
+    float psum_f_d[8];
+    for (int split_k_iter = 1; split_k_iter < split_k_target; ++split_k_iter) {
+      float4 psum_h_d = *(float4*)(workspace + split_k_iter * M * OC + M_thread_idx * OC + OC_thread_idx * 8);
+      *(float2*)(psum_f_d)   = __half22float2(*(half2*)(&psum_h_d.x));
+      *(float2*)(psum_f_d+2) = __half22float2(*(half2*)(&psum_h_d.y));
+      *(float2*)(psum_f_d+4) = __half22float2(*(half2*)(&psum_h_d.z));
+      *(float2*)(psum_f_d+6) = __half22float2(*(half2*)(&psum_h_d.w));
+      for (int i = 0; i < 8; ++i) psum_f[i] += psum_f_d[i];
+    }
+
+    half results[8];
+    *(half2*)(results)   = __float22half2_rn(*(float2*)(psum_f));
+    *(half2*)(results+2) = __float22half2_rn(*(float2*)(psum_f+2));
+    *(half2*)(results+4) = __float22half2_rn(*(float2*)(psum_f+4));
+    *(half2*)(results+6) = __float22half2_rn(*(float2*)(psum_f+6));
+
+    *(float4*)(C + M_thread_idx * OC + OC_thread_idx * 8) = *(float4*)(results);
+  }
 }
 
 } // namespace quick
@@ -1420,31 +1436,35 @@ torch::Tensor awq_quick_gemm(
     torch::Tensor _kernel,
     torch::Tensor _scaling_factors,
     torch::Tensor _zeros,
-    int split_k_iters)
+    int split_k_iters,
+    int split_k_tails)
 {
   int num_in_feats = _in_feats.size(0);
   int num_in_channels = _in_feats.size(1);
   const at::cuda::OptionalCUDAGuard device_guard(device_of(_kernel));
 
+  int _split_k_iters = std::max(split_k_iters, split_k_tails);
+  if (num_in_feats == 1) _split_k_iters = split_k_iters;
+
   auto options = torch::TensorOptions().dtype(_in_feats.dtype()).device(_kernel.device());
-  at::Tensor _workspace = torch::empty({split_k_iters, num_in_feats, _kernel.size(1) / 4 * 8}, options);
+  at::Tensor _workspace = torch::empty({_split_k_iters, num_in_feats, _kernel.size(1) / 4 * 8}, options);
+  at::Tensor _out_feats = torch::empty({num_in_feats, _kernel.size(1) / 4 * 8}, options);
   int num_out_feats = _workspace.size(-2);
   int num_out_channels = _workspace.size(-1);
 
   auto in_feats = reinterpret_cast<half*>(_in_feats.data_ptr<at::Half>());
   auto kernel = reinterpret_cast<int*>(_kernel.data_ptr<int>());
   auto workspace = reinterpret_cast<half*>(_workspace.data_ptr<at::Half>());
+  auto out_feats = reinterpret_cast<half*>(_out_feats.data_ptr<at::Half>());
   auto scaling_factors = reinterpret_cast<half*>(_scaling_factors.data_ptr<at::Half>());
   auto zeros = reinterpret_cast<int*>(_zeros.data_ptr<int>());
   int group_size = num_in_channels / _scaling_factors.size(0);
 
   if (num_out_channels % 128 != 0)
-      throw std::invalid_argument("OC is not multiple of cta_N = 128");
-  if (num_out_channels % 8 != 0)
-      throw std::invalid_argument("OC is not multiple of pack_num = 8");
+      throw std::invalid_argument("OC should be a multiple of 128");
   if (group_size % 32 != 0)
       throw std::invalid_argument("Group size should be a multiple of 32");
-  int oc_block_num = num_out_channels / 128 / 1;
+  int oc_block_num = num_out_channels / 128;
 
   const cudaStream_t stream = at::cuda::getCurrentCUDAStream();
   dim3 threads_per_block(32, 2);
@@ -1456,31 +1476,36 @@ torch::Tensor awq_quick_gemm(
     return _workspace.sum(0);
   }
 
+  auto num_head_feats = 0;
   auto num_tail_feats = num_in_feats;
   if (num_in_feats >= 64) {
-    auto num_head_feats = (num_in_feats / 64) * 64;
+    num_head_feats = (num_in_feats / 64) * 64;
     num_tail_feats -= num_head_feats;
     dim3 num_blocks_64(num_head_feats / 64 * oc_block_num, split_k_iters);
     vllm::quick::gemm_forward_4bit_cuda_quick_m64n128k32<<<num_blocks_64, threads_per_block, 0, stream>>>(
       group_size, split_k_iters, in_feats, kernel, scaling_factors, zeros, num_out_feats, num_in_channels, num_out_channels, workspace);
     in_feats += num_head_feats * num_in_channels;
-    workspace += num_head_feats * num_out_channels;
   }
   else if (num_in_feats >= 32) {
+    num_head_feats = 32;
     num_tail_feats -= 32;
     dim3 num_blocks_32(oc_block_num, split_k_iters);
     vllm::quick::gemm_forward_4bit_cuda_quick_m32n128k32<<<num_blocks_32, threads_per_block, 0, stream>>>(
       group_size, split_k_iters, in_feats, kernel, scaling_factors, zeros, num_out_feats, num_in_channels, num_out_channels, workspace);
     in_feats += 32 * num_in_channels;
-    workspace += 32 * num_out_channels;
   }
   // 16
   if (num_tail_feats > 0) {
-    dim3 num_blocks_16((num_tail_feats + 16 - 1) / 16 * oc_block_num, split_k_iters);
+    dim3 num_blocks_16((num_tail_feats + 16 - 1) / 16 * oc_block_num, split_k_tails);
     vllm::quick::gemm_forward_4bit_cuda_quick_m16n128k32<<<num_blocks_16, threads_per_block, 0, stream>>>(
-      group_size, split_k_iters, in_feats, kernel, scaling_factors, zeros, num_tail_feats, num_out_feats, num_in_channels, num_out_channels, workspace);
+      group_size, split_k_tails, in_feats, kernel, scaling_factors, zeros, num_tail_feats, num_out_feats, num_in_channels, num_out_channels, workspace + num_head_feats * num_out_channels);
   }
 
-  if (split_k_iters == 1) return _workspace;
-  return _workspace.sum(0);
+  if (_split_k_iters == 1) return _workspace;
+  static constexpr int NUM_THREADS_REDUCE_X = 8;
+  static constexpr int NUM_THREADS_REDUCE_Y = 16;
+  dim3 threads_per_block_reduce(NUM_THREADS_REDUCE_X, NUM_THREADS_REDUCE_Y);
+  dim3 num_blocks_reduce((num_out_feats + NUM_THREADS_REDUCE_X - 1) / NUM_THREADS_REDUCE_X, (num_out_channels / 8 + NUM_THREADS_REDUCE_Y - 1) / NUM_THREADS_REDUCE_Y);
+  vllm::quick::reduce_cond_psum<<<num_blocks_reduce, threads_per_block_reduce, 0, stream>>>(workspace, out_feats, num_in_feats, num_head_feats, num_out_channels, split_k_iters, split_k_tails);
+  return _out_feats;
 }

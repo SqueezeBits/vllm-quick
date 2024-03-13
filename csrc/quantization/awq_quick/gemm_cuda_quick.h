@@ -5,4 +5,5 @@ torch::Tensor awq_quick_gemm(
     torch::Tensor _kernel,
     torch::Tensor _scaling_factors,
     torch::Tensor _zeros,
-    int split_k_iters);
+    int split_k_iters,
+    int split_k_tails);

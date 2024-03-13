@@ -199,15 +199,11 @@ class QUICKAWQLinearMethod(LinearMethodBase):
 
         batch = reshaped_x.shape[0]
         split_k = 4
-        if self.large:
-            if batch > 512:
-                split_k = 1
-            elif batch > 256:
-                split_k = 2
-        else:
-            if batch > 256:
-                split_k = 2
-        out = ops.awq_quick_gemm(reshaped_x, qweight, scales, qzeros, split_k)
+        if batch >= 512:
+            split_k = 1
+        elif batch >= 256:
+            split_k = 2
+        out = ops.awq_quick_gemm(reshaped_x, qweight, scales, qzeros, split_k, 8)
 
         if bias is not None:
             out = out + bias
