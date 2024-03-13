@@ -3,6 +3,7 @@ from collections import defaultdict
 import os
 import time
 import pickle
+import torch
 from typing import (TYPE_CHECKING, Any, Dict, Iterable, List, Optional, Tuple,
                     Union)
 
@@ -821,6 +822,7 @@ class LLMEngine:
 
             # Only the driver worker returns the sampling results.
             output = all_outputs[0]
+            torch.cuda.synchronize()
         else:
             output = []
 

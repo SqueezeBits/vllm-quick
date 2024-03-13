@@ -149,8 +149,8 @@ class ModelConfig:
         self.tokenizer_mode = tokenizer_mode
 
     def _verify_quantization(self) -> None:
-        supported_quantization = ["awq", "gptq", "squeezellm"]
-        rocm_not_supported_quantization = ["awq"]
+        supported_quantization = ["awq", "gptq", "squeezellm", "quick"]
+        rocm_not_supported_quantization = ["awq", "quick"]
         if self.quantization is not None:
             self.quantization = self.quantization.lower()
 
@@ -158,6 +158,8 @@ class ModelConfig:
         hf_quant_config = getattr(self.hf_config, "quantization_config", None)
         if hf_quant_config is not None:
             hf_quant_method = str(hf_quant_config["quant_method"]).lower()
+            if hf_quant_method == "awq" and hf_quant_config["version"] == "quick":
+                hf_quant_method = "quick"
             if self.quantization is None:
                 self.quantization = hf_quant_method
             elif self.quantization != hf_quant_method:

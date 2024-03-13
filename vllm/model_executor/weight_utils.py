@@ -5,7 +5,7 @@ import fnmatch
 import json
 import os
 from collections import defaultdict
-from typing import Any, Iterator, List, Optional, Tuple
+from typing import Any, Iterator, List, Optional, Tuple, Callable
 
 from huggingface_hub import snapshot_download, HfFileSystem
 import numpy as np
@@ -206,6 +206,8 @@ def hf_model_weights_iterator(
     load_format: str = "auto",
     revision: Optional[str] = None,
     fall_back_to_pt: Optional[bool] = True,
+    packed_modules_mapping: Optional[dict] = None,
+    packing_func: Optional[Callable] = None,
 ) -> Iterator[Tuple[str, torch.Tensor]]:
     hf_folder, hf_weights_files, use_safetensors = prepare_hf_model_weights(
         model_name_or_path,
@@ -247,10 +249,35 @@ def hf_model_weights_iterator(
                 param = np.load(f)
             yield name, torch.from_numpy(param)
     elif use_safetensors:
-        for st_file in hf_weights_files:
+        keys_to_skip = []
+        for st_file_idx, st_file in enumerate(hf_weights_files):
             with safe_open(st_file, framework="pt") as f:
                 for name in f.keys():  # noqa: SIM118
-                    param = f.get_tensor(name)
+                    if name in keys_to_skip:
+                        continue
+                    param = None
+                    if packing_func is not None:
+                        assert packed_modules_mapping is not None
+                        for mapping_key, mapping_list in packed_modules_mapping.items():
+                            mapping_name = [mapping_keyword for mapping_keyword in mapping_list if mapping_keyword in name]
+                            if len(mapping_name) > 0:
+                                names_to_fuse = [name.replace(mapping_name[0], mapping_iter) for mapping_iter in mapping_list]
+                                weights_to_fuse = []
+                                for name_to_fuse in names_to_fuse:
+                                    if name_to_fuse in f.keys():
+                                        weights_to_fuse.append(f.get_tensor(name_to_fuse))
+                                    else:
+                                        for temp_idx in range(st_file_idx, len(hf_weights_files)):
+                                            with safe_open(hf_weights_files[temp_idx], framework="pt") as ft:
+                                                if name_to_fuse in ft.keys():
+                                                    weights_to_fuse.append(ft.get_tensor(name_to_fuse))
+                                                    break
+                                temp_weight = packing_func(weights_to_fuse, options=name.split('.')[-1])
+                                keys_to_skip += names_to_fuse
+                                param = temp_weight
+                                name = name.replace(mapping_name[0], mapping_key)
+                    if param is None:
+                        param = f.get_tensor(name)
                     yield name, param
     else:
         for bin_file in hf_weights_files:

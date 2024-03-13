@@ -342,6 +342,7 @@ vllm_extension_sources = [
 
 if _is_cuda():
     vllm_extension_sources.append("csrc/quantization/awq/gemm_kernels.cu")
+    vllm_extension_sources.append("csrc/quantization/awq_quick/gemm_cuda_quick.cu")
     vllm_extension_sources.append("csrc/custom_all_reduce.cu")
 
     # Add MoE kernels.

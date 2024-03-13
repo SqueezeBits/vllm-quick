@@ -357,8 +357,22 @@ class LlamaForCausalLM(nn.Module):
             ("gate_up_proj", "up_proj", 1),
         ]
         params_dict = dict(self.named_parameters())
+        packing_func = None
+        if (
+            hasattr(self.config, "quantization_config")
+            and self.config.quantization_config["version"] == "quick"
+        ):
+            # QUICK requires interleaving after concaternation.
+            from vllm.model_executor.layers.quantization.awq_quick import QUICK_cat
+            packing_func = QUICK_cat
         for name, loaded_weight in hf_model_weights_iterator(
-                model_name_or_path, cache_dir, load_format, revision):
+            model_name_or_path,
+            cache_dir,
+            load_format,
+            revision,
+            packed_modules_mapping=self.packed_modules_mapping,
+            packing_func=packing_func,
+        ):
             if "rotary_emb.inv_freq" in name:
                 continue
             if ("rotary_emb.cos_cached" in name
@@ -367,7 +381,7 @@ class LlamaForCausalLM(nn.Module):
                 # the checkpoint. Skip them.
                 continue
             for (param_name, weight_name, shard_id) in stacked_params_mapping:
-                if weight_name not in name:
+                if weight_name not in name or param_name in name:
                     continue
                 name = name.replace(weight_name, param_name)
                 # Skip loading extra bias for GPTQ models.
